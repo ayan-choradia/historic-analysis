@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Regime Analysis — ZQ Fixed Income Lab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Regime Analysis</h1>
+    <p class="subtitle">Policy regime breakdown: premium levels, curve shapes, and volatility across 2021–2025</p>
+</div>
+
+<!-- Regime Timeline Visual -->
+<div class="full-width card">
+    <div class="card-title">Policy Regimes Timeline</div>
+    <div class="chart-container short">
+        <canvas id="regimeTimeline"></canvas>
+    </div>
+</div>
+
+<!-- Regime Cards -->
+<div class="regime-timeline" id="regime-cards"></div>
+
+<!-- Regime Comparison Charts -->
+<div class="grid-2">
+    <div class="card">
+        <div class="card-title">Average FED1 Premium by Regime</div>
+        <div class="chart-container">
+            <canvas id="regimeFed1Chart"></canvas>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">Average Daily Volatility (FED1) by Regime</div>
+        <div class="chart-container">
+            <canvas id="regimeVolChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Regime Curve Shapes -->
+<div class="full-width card">
+    <div class="card-title">Average Meeting Premium Curve Shape by Regime (FED1–FED10)</div>
+    <div class="chart-container tall">
+        <canvas id="regimeCurveChart"></canvas>
+    </div>
+</div>
+
+<!-- Regime Volatility Heatmap -->
+<div class="full-width card">
+    <div class="card-title">Average Daily |Change| by Tenor & Regime</div>
+    <div class="scrollable-table">
+        <table class="data-table" id="regime-vol-table">
+            <thead>
+                <tr>
+                    <th>Regime</th>
+                    <th>Days</th>
+                    <th>FED1</th>
+                    <th>FED2</th>
+                    <th>FED3</th>
+                    <th>FED4</th>
+                    <th>FED5</th>
+                    <th>FED6</th>
+                    <th>FED7</th>
+                    <th>FED8</th>
+                </tr>
+            </thead>
+            <tbody id="regime-vol-body"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const regimeColors = ['#4CAF50', '#FF9800', '#F44336', '#E91E63', '#9C27B0', '#2196F3', '#00BCD4', '#607D8B'];
+
+document.addEventListener('DOMContentLoaded', async () => {
+    const regimes = await fetchJSON('/api/regimes');
+
+    // ─── Regime Cards ───
+    const cardsDiv = document.getElementById('regime-cards');
+    regimes.forEach((r, idx) => {
+        const fed1Avg = r.avg_premiums?.FED1 ?? '—';
+        const fed4Avg = r.avg_premiums?.FED4 ?? '—';
+        const fed8Avg = r.avg_premiums?.FED8 ?? '—';
+        const vol1 = r.avg_volatility?.FED1 ?? '—';
+
+        const startFed1 = r.start_premiums?.FED1 ?? '—';
+        const endFed1 = r.end_premiums?.FED1 ?? '—';
+        const fed1Change = (typeof startFed1 === 'number' && typeof endFed1 === 'number')
+            ? (endFed1 - startFed1).toFixed(1) : '—';
+        const chgColor = parseFloat(fed1Change) > 0 ? 'var(--hawk-red)' : parseFloat(fed1Change) < 0 ? 'var(--dove-green)' : 'var(--text-secondary)';
+
+        cardsDiv.innerHTML += `
+        <div class="regime-block" style="border-left: 4px solid ${r.color}">
+            <div class="regime-label">
+                <div class="regime-name" style="color:${r.color}">${r.name}</div>
+                <div class="regime-dates">${r.start} → ${r.end}</div>
+                <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;line-height:1.4">${r.description}</div>
+            </div>
+            <div class="regime-stats">
+                <div class="regime-stat">
+                    <div class="regime-stat-label">Trading Days</div>
+                    <div class="regime-stat-value">${r.trading_days}</div>
+                </div>
+                <div class="regime-stat">
+                    <div class="regime-stat-label">Avg FED1</div>
+                    <div class="regime-stat-value" style="color:${r.color}">${typeof fed1Avg === 'number' ? fed1Avg.toFixed(1) : fed1Avg} bp</div>
+                </div>
+                <div class="regime-stat">
+                    <div class="regime-stat-label">Avg FED4</div>
+                    <div class="regime-stat-value">${typeof fed4Avg === 'number' ? fed4Avg.toFixed(1) : fed4Avg} bp</div>
+                </div>
+                <div class="regime-stat">
+                    <div class="regime-stat-label">Avg FED8</div>
+                    <div class="regime-stat-value">${typeof fed8Avg === 'number' ? fed8Avg.toFixed(1) : fed8Avg} bp</div>
+                </div>
+                <div class="regime-stat">
+                    <div class="regime-stat-label">FED1 Vol |d/d|</div>
+                    <div class="regime-stat-value">${typeof vol1 === 'number' ? vol1.toFixed(2) : vol1} bp</div>
+                </div>
+                <div class="regime-stat">
+                    <div class="regime-stat-label">FED1 Δ Start→End</div>
+                    <div class="regime-stat-value" style="color:${chgColor}">${fed1Change} bp</div>
+                </div>
+            </div>
+        </div>`;
+    });
+
+    // ─── Avg FED1 by Regime ───
+    new Chart(document.getElementById('regimeFed1Chart'), {
+        type: 'bar',
+        data: {
+            labels: regimes.map(r => r.name),
+            datasets: [{
+                label: 'Avg FED1 Premium (bps)',
+                data: regimes.map(r => r.avg_premiums?.FED1 ?? 0),
+                backgroundColor: regimes.map(r => r.color + '80'),
+                borderColor: regimes.map(r => r.color),
+                borderWidth: 1,
+                borderRadius: 6,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+        })
+    });
+
+    // ─── Avg Vol by Regime ───
+    new Chart(document.getElementById('regimeVolChart'), {
+        type: 'bar',
+        data: {
+            labels: regimes.map(r => r.name),
+            datasets: [{
+                label: 'Avg |FED1 d/d Change| (bps)',
+                data: regimes.map(r => r.avg_volatility?.FED1 ?? 0),
+                backgroundColor: regimes.map(r => r.color + '80'),
+                borderColor: regimes.map(r => r.color),
+                borderWidth: 1,
+                borderRadius: 6,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+        })
+    });
+
+    // ─── Curve Shapes by Regime ───
+    const curveDatasets = regimes.map((r, idx) => {
+        const data = [];
+        for (let i = 1; i <= 10; i++) {
+            data.push(r.avg_premiums?.[`FED${i}`] ?? null);
+        }
+        return {
+            label: r.name,
+            data: data,
+            borderColor: r.color,
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            pointRadius: 4,
+            pointBackgroundColor: r.color,
+            tension: 0.3,
+        };
+    });
+
+    new Chart(document.getElementById('regimeCurveChart'), {
+        type: 'line',
+        data: {
+            labels: ['FED1','FED2','FED3','FED4','FED5','FED6','FED7','FED8','FED9','FED10'],
+            datasets: curveDatasets,
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            scales: {
+                y: { title: { display: true, text: 'Avg Premium (bps)', color: COLORS.text } }
+            },
+            interaction: { mode: 'index', intersect: false },
+        })
+    });
+
+    // ─── Volatility Heatmap Table ───
+    const vtbody = document.getElementById('regime-vol-body');
+    regimes.forEach(r => {
+        let row = `<tr>`;
+        row += `<td style="font-weight:600;color:${r.color}">${r.name}</td>`;
+        row += `<td>${r.trading_days}</td>`;
+        for (let i = 1; i <= 8; i++) {
+            const v = r.avg_volatility?.[`FED${i}`] ?? 0;
+            const intensity = Math.min(5, Math.floor(v / 0.5));
+            row += `<td class="heat${intensity}" style="text-align:center;font-weight:600">${typeof v === 'number' ? v.toFixed(2) : '—'}</td>`;
+        }
+        row += `</tr>`;
+        vtbody.innerHTML += row;
+    });
+
+    // ─── Timeline Bar ───
+    const totalDays = regimes.reduce((s, r) => s + (r.trading_days || 0), 0);
+    new Chart(document.getElementById('regimeTimeline'), {
+        type: 'bar',
+        data: {
+            labels: ['2021-2025'],
+            datasets: regimes.map(r => ({
+                label: r.name,
+                data: [r.trading_days || 0],
+                backgroundColor: r.color + 'CC',
+                borderColor: r.color,
+                borderWidth: 0,
+            }))
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'bottom', labels: { color: COLORS.text, font: { size: 10 }, boxWidth: 10 } },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => `${ctx.dataset.label}: ${ctx.raw} trading days`,
+                    }
+                }
+            },
+            scales: {
+                x: { stacked: true, display: false },
+                y: { stacked: true, display: false }
+            }
+        }
+    });
+});
+</script>
+{% endblock %}

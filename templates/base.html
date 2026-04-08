@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}US Fixed Income Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+    <div class="navbar-brand">ZQ Fixed Income Lab</div>
+    <div class="navbar-links">
+        <a href="/" class="{% if request.path == '/' %}active{% endif %}">Dashboard</a>
+        <a href="/day-explorer" class="{% if request.path == '/day-explorer' %}active{% endif %}">Day Explorer</a>
+        <a href="/curve-viewer" class="{% if request.path == '/curve-viewer' %}active{% endif %}">Curve Viewer</a>
+        <a href="/event-analysis" class="{% if request.path == '/event-analysis' %}active{% endif %}">Event Analysis</a>
+        <a href="/fomc-tracker" class="{% if request.path == '/fomc-tracker' %}active{% endif %}">FOMC Tracker</a>
+        <a href="/regime-analysis" class="{% if request.path == '/regime-analysis' %}active{% endif %}">Regime Analysis</a>
+    </div>
+</nav>
+
+<div class="main-content">
+    {% block content %}{% endblock %}
+</div>
+
+<script>
+// ─── Shared Chart Config ───
+const COLORS = {
+    fed1: '#ef4444', fed2: '#f59e0b', fed3: '#f97316', fed4: '#eab308',
+    fed5: '#84cc16', fed6: '#22c55e', fed7: '#10b981', fed8: '#06b6d4',
+    fed9: '#3b82f6', fed10: '#6366f1', fed11: '#8b5cf6', fed12: '#a855f7',
+    hawk: '#ef4444', dove: '#10b981', neutral: '#64748b',
+    grid: 'rgba(255,255,255,0.05)', text: '#94a3b8',
+};
+
+const CHART_DEFAULTS = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+        legend: {
+            labels: { color: COLORS.text, font: { family: 'Inter', size: 11 }, boxWidth: 12 }
+        },
+        tooltip: {
+            backgroundColor: 'rgba(17,24,39,0.95)',
+            titleColor: '#f1f5f9',
+            bodyColor: '#94a3b8',
+            borderColor: 'rgba(99,102,241,0.3)',
+            borderWidth: 1,
+            titleFont: { family: 'Inter', weight: '600' },
+            bodyFont: { family: 'JetBrains Mono', size: 12 },
+            padding: 12,
+            cornerRadius: 8,
+        }
+    },
+    scales: {
+        x: {
+            ticks: { color: COLORS.text, font: { family: 'Inter', size: 10 } },
+            grid: { color: COLORS.grid },
+        },
+        y: {
+            ticks: { color: COLORS.text, font: { family: 'JetBrains Mono', size: 10 } },
+            grid: { color: COLORS.grid },
+        }
+    }
+};
+
+function deepMerge(target, source) {
+    const result = { ...target };
+    for (const key of Object.keys(source)) {
+        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+            result[key] = deepMerge(result[key] || {}, source[key]);
+        } else {
+            result[key] = source[key];
+        }
+    }
+    return result;
+}
+
+function formatBps(val) {
+    if (val === null || val === undefined) return '—';
+    const sign = val > 0 ? '+' : '';
+    return `${sign}${val.toFixed(1)} bp`;
+}
+
+function colorBps(val) {
+    if (val === null || val === undefined) return 'color: var(--text-muted)';
+    if (val > 0.5) return 'color: var(--hawk-red)';
+    if (val < -0.5) return 'color: var(--dove-green)';
+    return 'color: var(--text-secondary)';
+}
+
+async function fetchJSON(url) {
+    const resp = await fetch(url);
+    return resp.json();
+}
+</script>
+
+{% block scripts %}{% endblock %}
+
+</body>
+</html>

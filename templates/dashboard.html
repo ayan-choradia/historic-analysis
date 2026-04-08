@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — ZQ Fixed Income Lab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>US Fixed Income Analysis Dashboard</h1>
+    <p class="subtitle">Meeting Premiums (FED1–FED12), Economic Surprises & Fed Events — 2021 to 2025</p>
+</div>
+
+<!-- Stats Cards -->
+<div class="grid-4" id="stats-cards">
+    <div class="card">
+        <div class="card-title">Trading Days Analyzed</div>
+        <div class="card-value" id="stat-days">—</div>
+    </div>
+    <div class="card">
+        <div class="card-title">Economic Events</div>
+        <div class="card-value" id="stat-events">—</div>
+    </div>
+    <div class="card">
+        <div class="card-title">FOMC Meetings</div>
+        <div class="card-value" id="stat-fomc">—</div>
+    </div>
+    <div class="card">
+        <div class="card-title">Date Range</div>
+        <div class="card-value" id="stat-range" style="font-size:1rem">—</div>
+    </div>
+</div>
+
+<!-- Premium Level Timeseries -->
+<div class="full-width card">
+    <div class="card-title">Meeting Premium Levels (FED1–FED8) — Implied Rate Change (bps)</div>
+    <div class="chart-container tall">
+        <canvas id="premiumLevelsChart"></canvas>
+    </div>
+</div>
+
+<!-- Daily Changes Heatmap-style chart -->
+<div class="full-width card">
+    <div class="card-title">Daily Premium Changes (FED1–FED4) — Day-over-Day bps Moves</div>
+    <div class="chart-container tall">
+        <canvas id="dailyChangesChart"></canvas>
+    </div>
+</div>
+
+<!-- Cumulative / Terminal Rate Evolution -->
+<div class="grid-2">
+    <div class="card">
+        <div class="card-title">Cumulative 8-Meeting Premium (Terminal Rate Proxy)</div>
+        <div class="chart-container">
+            <canvas id="terminalChart"></canvas>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">Average Daily Volatility by Tenor (bps)</div>
+        <div class="chart-container">
+            <canvas id="volChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Biggest Move Days -->
+<div class="full-width card">
+    <div class="card-title">Top 30 Biggest Daily Moves (Sum of |FED1–FED8 changes|)</div>
+    <div class="scrollable-table" style="max-height:500px">
+        <table class="data-table" id="biggest-moves-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Total |Move|</th>
+                    <th>Net Direction</th>
+                    <th>Front (1-3)</th>
+                    <th>Back (5-8)</th>
+                    <th>FED1</th>
+                    <th>FED2</th>
+                    <th>FED3</th>
+                    <th>FED4</th>
+                    <th>Key Events</th>
+                </tr>
+            </thead>
+            <tbody id="biggest-moves-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Current Premium Curve -->
+<div class="grid-2">
+    <div class="card">
+        <div class="card-title">Latest Meeting Premium Curve</div>
+        <div class="chart-container short">
+            <canvas id="currentCurveChart"></canvas>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">FED1 Premium Time Series (Next Meeting Rate Expectation)</div>
+        <div class="chart-container short">
+            <canvas id="fed1TsChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', async () => {
+    // Load all dashboard data in parallel
+    const [stats, premTS, chgTS, termData, bigMoves] = await Promise.all([
+        fetchJSON('/api/dashboard-stats'),
+        fetchJSON('/api/premium-timeseries'),
+        fetchJSON('/api/premium-changes-timeseries'),
+        fetchJSON('/api/terminal-rate'),
+        fetchJSON('/api/biggest-moves'),
+    ]);
+
+    // ─── Stats Cards ───
+    document.getElementById('stat-days').textContent = stats.total_trading_days.toLocaleString();
+    document.getElementById('stat-events').textContent = stats.total_events.toLocaleString();
+    document.getElementById('stat-fomc').textContent = stats.fomc_meetings;
+    document.getElementById('stat-range').textContent = stats.date_range;
+
+    // ─── Premium Levels Chart ───
+    const fedKeys = ['FED1','FED2','FED3','FED4','FED5','FED6','FED7','FED8'];
+    const fedColors = [COLORS.fed1, COLORS.fed2, COLORS.fed3, COLORS.fed4, COLORS.fed5, COLORS.fed6, COLORS.fed7, COLORS.fed8];
+
+    new Chart(document.getElementById('premiumLevelsChart'), {
+        type: 'line',
+        data: {
+            labels: premTS.dates,
+            datasets: fedKeys.map((k, i) => ({
+                label: k,
+                data: premTS[k] || [],
+                borderColor: fedColors[i],
+                backgroundColor: 'transparent',
+                borderWidth: 1.5,
+                pointRadius: 0,
+                tension: 0.1,
+            }))
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: { mode: 'index', intersect: false },
+            },
+            scales: {
+                x: { ticks: { maxTicksLimit: 20 } },
+                y: { title: { display: true, text: 'bps', color: COLORS.text } }
+            },
+            interaction: { mode: 'index', intersect: false },
+        })
+    });
+
+    // ─── Daily Changes Chart (FED1-FED4) ───
+    const chgKeys = ['FED1','FED2','FED3','FED4'];
+    const chgColors = [COLORS.fed1, COLORS.fed2, COLORS.fed3, COLORS.fed4];
+
+    new Chart(document.getElementById('dailyChangesChart'), {
+        type: 'bar',
+        data: {
+            labels: chgTS.dates,
+            datasets: chgKeys.map((k, i) => ({
+                label: `d/d ${k}`,
+                data: chgTS[k] || [],
+                backgroundColor: chgColors[i] + '80',
+                borderColor: chgColors[i],
+                borderWidth: 0.5,
+                barPercentage: 1.0,
+                categoryPercentage: 1.0,
+            }))
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: { mode: 'index', intersect: false },
+            },
+            scales: {
+                x: { stacked: false, ticks: { maxTicksLimit: 20 } },
+                y: { title: { display: true, text: 'd/d bps change', color: COLORS.text } }
+            }
+        })
+    });
+
+    // ─── Terminal Rate Evolution ───
+    new Chart(document.getElementById('terminalChart'), {
+        type: 'line',
+        data: {
+            labels: termData.map(d => d.date),
+            datasets: [
+                {
+                    label: 'Cumulative FED1-8 (bps)',
+                    data: termData.map(d => d.cumulative_8),
+                    borderColor: COLORS.fed8,
+                    backgroundColor: COLORS.fed8 + '20',
+                    fill: true,
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                },
+                {
+                    label: 'FED1',
+                    data: termData.map(d => d.fed1),
+                    borderColor: COLORS.fed1,
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    borderDash: [3,3],
+                },
+                {
+                    label: 'FED4',
+                    data: termData.map(d => d.fed4),
+                    borderColor: COLORS.fed4,
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    borderDash: [3,3],
+                }
+            ]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            scales: { x: { ticks: { maxTicksLimit: 12 } } },
+            interaction: { mode: 'index', intersect: false },
+        })
+    });
+
+    // ─── Average Volatility Bar Chart ───
+    const volLabels = Object.keys(stats.avg_daily_vol);
+    const volData = Object.values(stats.avg_daily_vol);
+
+    new Chart(document.getElementById('volChart'), {
+        type: 'bar',
+        data: {
+            labels: volLabels,
+            datasets: [{
+                label: 'Avg |d/d Change| (bps)',
+                data: volData,
+                backgroundColor: volLabels.map((_, i) => fedColors[i] || '#6366f1'),
+                borderRadius: 6,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { title: { display: true, text: 'bps', color: COLORS.text } }
+            }
+        })
+    });
+
+    // ─── Biggest Moves Table ───
+    const tbody = document.getElementById('biggest-moves-body');
+    bigMoves.slice(0, 30).forEach(m => {
+        const evtSummary = m.events.map(e => {
+            let badge = '';
+            if (e.category === 'CPI' || e.category === 'NFP' || e.category === 'FOMC Decision')
+                badge = `<span class="badge badge-hawk">${e.category}</span> `;
+            else if (e.category === 'Powell Speech' || e.category === 'Fed Speech')
+                badge = `<span class="badge badge-fomc">${e.category}</span> `;
+            return badge + (e.actual ? e.actual : '');
+        }).join(', ');
+
+        const netDir = m.total_signed_move > 0 ? 'HAWKISH ↑' : 'DOVISH ↓';
+        const netColor = m.total_signed_move > 0 ? 'hawk' : 'dove';
+
+        tbody.innerHTML += `
+            <tr>
+                <td class="date-col" onclick="window.location='/day-explorer?date=${m.date}'">${m.date}</td>
+                <td style="font-weight:700">${m.total_abs_move.toFixed(1)}</td>
+                <td class="${netColor}" style="font-weight:600">${netDir}</td>
+                <td style="${colorBps(m.front_move)}">${formatBps(m.front_move)}</td>
+                <td style="${colorBps(m.back_move)}">${formatBps(m.back_move)}</td>
+                <td style="${colorBps(m.fed1_chg)}">${formatBps(m.fed1_chg)}</td>
+                <td style="${colorBps(m.fed2_chg)}">${formatBps(m.fed2_chg)}</td>
+                <td style="${colorBps(m.fed3_chg)}">${formatBps(m.fed3_chg)}</td>
+                <td style="${colorBps(m.fed4_chg)}">${formatBps(m.fed4_chg)}</td>
+                <td class="event-col">${evtSummary || '—'}</td>
+            </tr>
+        `;
+    });
+
+    // ─── Current Premium Curve ───
+    const curveLabels = Object.keys(stats.current_premiums);
+    const curveData = Object.values(stats.current_premiums);
+
+    new Chart(document.getElementById('currentCurveChart'), {
+        type: 'bar',
+        data: {
+            labels: curveLabels,
+            datasets: [{
+                label: 'Premium (bps)',
+                data: curveData,
+                backgroundColor: curveData.map(v =>
+                    v > 0 ? COLORS.hawk + '70' : v < 0 ? COLORS.dove + '70' : COLORS.neutral + '40'
+                ),
+                borderColor: curveData.map(v =>
+                    v > 0 ? COLORS.hawk : v < 0 ? COLORS.dove : COLORS.neutral
+                ),
+                borderWidth: 1,
+                borderRadius: 4,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { title: { display: true, text: 'bps', color: COLORS.text } }
+            }
+        })
+    });
+
+    // ─── FED1 Time Series ───
+    new Chart(document.getElementById('fed1TsChart'), {
+        type: 'line',
+        data: {
+            labels: premTS.dates,
+            datasets: [{
+                label: 'FED1 Premium (bps)',
+                data: premTS.FED1 || [],
+                borderColor: COLORS.fed1,
+                backgroundColor: COLORS.fed1 + '15',
+                fill: true,
+                borderWidth: 1.5,
+                pointRadius: 0,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: { legend: { display: false } },
+            scales: { x: { ticks: { maxTicksLimit: 12 } } },
+        })
+    });
+});
+</script>
+{% endblock %}

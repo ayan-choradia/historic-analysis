@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% block title %}Day Explorer — ZQ Fixed Income Lab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Day Explorer</h1>
+    <p class="subtitle">Select any date to see economic events, premium changes, and curve movement</p>
+</div>
+
+<div class="date-slider-container" style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+    <input type="date" id="date-picker" class="date-input" value="2022-06-15">
+    <button class="btn" onclick="navigate(-1)">← Prev Day</button>
+    <button class="btn" onclick="navigate(1)">Next Day →</button>
+    <button class="btn btn-primary" onclick="loadDay()">Load</button>
+    <span id="day-status" style="color:var(--text-muted); font-size:0.85rem;"></span>
+</div>
+
+<div id="day-content" style="display:none;">
+    <!-- Premium Change Bars -->
+    <div class="grid-4" id="quick-stats">
+        <div class="card">
+            <div class="card-title">FED1 Change</div>
+            <div class="card-value" id="fed1-change">—</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Front-End (1-3) Total</div>
+            <div class="card-value" id="front-total">—</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Back-End (5-8) Total</div>
+            <div class="card-value" id="back-total">—</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Direction</div>
+            <div class="card-value" id="direction">—</div>
+        </div>
+    </div>
+
+    <!-- Curve Comparison: Today vs Yesterday -->
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-title">Premium Curve: Today vs Previous Day</div>
+            <div class="chart-container">
+                <canvas id="curveCmpChart"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">Day-over-Day Changes by Tenor</div>
+            <div class="chart-container">
+                <canvas id="changeBarChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Events Table -->
+    <div class="full-width card">
+        <div class="card-title">Economic Events & Data Releases</div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Category</th>
+                    <th>Actual</th>
+                    <th>Consensus</th>
+                    <th>Previous</th>
+                    <th>Signal</th>
+                </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+        </table>
+    </div>
+
+    <!-- Analysis Text -->
+    <div class="full-width card" id="analysis-card">
+        <div class="card-title">Day Analysis</div>
+        <div id="analysis-text" style="color:var(--text-secondary); line-height:1.8; font-size:0.9rem;"></div>
+    </div>
+</div>
+
+<div id="day-loading" class="loading" style="display:none;">Loading day data</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let availableDates = [];
+let currentIdx = -1;
+let curveCmpChart, changeBarChart;
+
+document.addEventListener('DOMContentLoaded', async () => {
+    availableDates = await fetchJSON('/api/available-dates');
+    // Check URL for date parameter
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('date')) {
+        document.getElementById('date-picker').value = params.get('date');
+    }
+    loadDay();
+});
+
+function navigate(dir) {
+    const current = document.getElementById('date-picker').value;
+    const idx = availableDates.indexOf(current);
+    if (idx >= 0) {
+        const newIdx = Math.max(0, Math.min(availableDates.length - 1, idx + dir));
+        document.getElementById('date-picker').value = availableDates[newIdx];
+        loadDay();
+    } else {
+        // Find nearest
+        const dateVal = new Date(current).getTime();
+        let nearest = 0;
+        let minDiff = Infinity;
+        availableDates.forEach((d, i) => {
+            const diff = Math.abs(new Date(d).getTime() - dateVal);
+            if (diff < minDiff) { minDiff = diff; nearest = i; }
+        });
+        const newIdx = Math.max(0, Math.min(availableDates.length - 1, nearest + dir));
+        document.getElementById('date-picker').value = availableDates[newIdx];
+        loadDay();
+    }
+}
+
+async function loadDay() {
+    const dateStr = document.getElementById('date-picker').value;
+    document.getElementById('day-loading').style.display = 'flex';
+    document.getElementById('day-content').style.display = 'none';
+    document.getElementById('day-status').textContent = '';
+
+    try {
+        const data = await fetchJSON(`/api/day-data/${dateStr}`);
+
+        if (data.error) {
+            document.getElementById('day-status').textContent = `No data for ${dateStr}. Try navigating.`;
+            document.getElementById('day-loading').style.display = 'none';
+            return;
+        }
+
+        document.getElementById('day-content').style.display = 'block';
+        document.getElementById('day-loading').style.display = 'none';
+
+        // Quick stats
+        const fed1c = data.changes.FED1;
+        const el1 = document.getElementById('fed1-change');
+        el1.textContent = formatBps(fed1c);
+        el1.className = 'card-value ' + (fed1c > 0 ? 'positive' : fed1c < 0 ? 'negative' : '');
+
+        const frontEl = document.getElementById('front-total');
+        frontEl.textContent = formatBps(data.total_front_change);
+        frontEl.className = 'card-value ' + (data.total_front_change > 0 ? 'positive' : 'negative');
+
+        const backEl = document.getElementById('back-total');
+        backEl.textContent = formatBps(data.total_back_change);
+        backEl.className = 'card-value ' + (data.total_back_change > 0 ? 'positive' : 'negative');
+
+        const totalSigned = Object.values(data.changes).filter(v => v !== null).reduce((s, v) => s + v, 0);
+        const dirEl = document.getElementById('direction');
+        dirEl.textContent = totalSigned > 1 ? 'HAWKISH ↑' : totalSigned < -1 ? 'DOVISH ↓' : 'NEUTRAL —';
+        dirEl.className = 'card-value ' + (totalSigned > 1 ? 'positive' : totalSigned < -1 ? 'negative' : '');
+
+        // Curve comparison chart
+        const labels = Object.keys(data.premiums);
+        const todayData = Object.values(data.premiums);
+        const prevData = Object.values(data.prev_premiums);
+
+        if (curveCmpChart) curveCmpChart.destroy();
+        curveCmpChart = new Chart(document.getElementById('curveCmpChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: `${dateStr} (Today)`,
+                        data: todayData,
+                        borderColor: '#6366f1',
+                        backgroundColor: 'rgba(99,102,241,0.1)',
+                        fill: true,
+                        borderWidth: 2,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#6366f1',
+                    },
+                    {
+                        label: 'Previous Day',
+                        data: prevData,
+                        borderColor: '#64748b',
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
+                        pointRadius: 3,
+                        pointBackgroundColor: '#64748b',
+                    }
+                ]
+            },
+            options: deepMerge(CHART_DEFAULTS, {
+                scales: {
+                    y: { title: { display: true, text: 'bps', color: COLORS.text } }
+                }
+            })
+        });
+
+        // Change bar chart
+        const changeLabels = Object.keys(data.changes);
+        const changeData = Object.values(data.changes);
+
+        if (changeBarChart) changeBarChart.destroy();
+        changeBarChart = new Chart(document.getElementById('changeBarChart'), {
+            type: 'bar',
+            data: {
+                labels: changeLabels,
+                datasets: [{
+                    label: 'd/d Change (bps)',
+                    data: changeData,
+                    backgroundColor: changeData.map(v =>
+                        v > 0 ? 'rgba(239,68,68,0.6)' : v < 0 ? 'rgba(16,185,129,0.6)' : 'rgba(100,116,139,0.3)'
+                    ),
+                    borderColor: changeData.map(v =>
+                        v > 0 ? '#ef4444' : v < 0 ? '#10b981' : '#64748b'
+                    ),
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }]
+            },
+            options: deepMerge(CHART_DEFAULTS, {
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { title: { display: true, text: 'bps change', color: COLORS.text } }
+                }
+            })
+        });
+
+        // Events table
+        const tbody = document.getElementById('events-body');
+        tbody.innerHTML = '';
+        const events = data.events || [];
+        events.forEach(ev => {
+            const signal = ev.hawk_dove === 1 ? '<span class="badge badge-hawk">HAWKISH</span>'
+                : ev.hawk_dove === -1 ? '<span class="badge badge-dove">DOVISH</span>'
+                : '<span class="badge badge-neutral">—</span>';
+
+            tbody.innerHTML += `
+                <tr>
+                    <td>${ev.time || ''}</td>
+                    <td class="event-col" style="white-space:normal">${ev.event}</td>
+                    <td><span class="badge badge-fomc">${ev.category}</span></td>
+                    <td style="font-weight:600">${ev.actual || '—'}</td>
+                    <td>${ev.consensus || '—'}</td>
+                    <td>${ev.previous || '—'}</td>
+                    <td>${signal}</td>
+                </tr>
+            `;
+        });
+
+        // Analysis text
+        generateAnalysis(data);
+
+    } catch (err) {
+        document.getElementById('day-status').textContent = `Error: ${err.message}`;
+        document.getElementById('day-loading').style.display = 'none';
+    }
+}
+
+function generateAnalysis(data) {
+    const events = data.events || [];
+    const changes = data.changes;
+    const analysis = [];
+
+    // Overall direction
+    const totalSigned = Object.values(changes).filter(v => v !== null).reduce((s, v) => s + v, 0);
+    const fed1c = changes.FED1 || 0;
+    const frontMove = data.total_front_change;
+    const backMove = data.total_back_change;
+
+    if (Math.abs(totalSigned) > 5) {
+        analysis.push(`<strong>Significant move day.</strong> Total signed premium change across FED1-12: <span style="${colorBps(totalSigned)}">${formatBps(totalSigned)}</span>. This signals a major repricing of rate expectations.`);
+    }
+
+    // Front vs Back analysis
+    if (frontMove && backMove) {
+        if (Math.abs(frontMove) > Math.abs(backMove) * 1.5) {
+            analysis.push(`<strong>Front-end led move:</strong> Front (FED1-3) moved ${formatBps(frontMove)} vs Back (FED5-8) ${formatBps(backMove)}. This suggests the market repriced the <em>near-term</em> rate path more — typically happens on strong data surprises or explicit Fed communication about the next meeting.`);
+        } else if (Math.abs(backMove) > Math.abs(frontMove) * 1.5) {
+            analysis.push(`<strong>Back-end led move:</strong> Back (FED5-8) moved ${formatBps(backMove)} vs Front (FED1-3) ${formatBps(frontMove)}. Back-end-led moves suggest the market is repricing the <em>terminal rate</em> or the longer-term rate trajectory — often triggered by SEP dot plot shifts, inflation expectations, or structural policy signals.`);
+        } else if (Math.abs(frontMove) > 1 && Math.abs(backMove) > 1) {
+            if (frontMove * backMove > 0) {
+                analysis.push(`<strong>Parallel shift:</strong> Front and back moved in the same direction (${formatBps(frontMove)} / ${formatBps(backMove)}). Parallel shifts indicate a broad reassessment of the entire rate path, often after FOMC meetings or major macro surprises.`);
+            } else {
+                analysis.push(`<strong>Curve twist:</strong> Front moved ${formatBps(frontMove)} but back moved ${formatBps(backMove)} — opposite directions. This is a flattening/steepening trade, suggesting the market expects a different trajectory for near-term vs long-term policy.`);
+            }
+        }
+    }
+
+    // Event attribution
+    const importantEvents = events.filter(e =>
+        ['CPI', 'NFP', 'PCE', 'FOMC Decision', 'Powell Speech', 'FOMC Minutes', 'Fed Speech', 'GDP', 'ISM Mfg'].includes(e.category)
+    );
+
+    importantEvents.forEach(ev => {
+        if (ev.hawk_dove === 1) {
+            analysis.push(`📈 <strong>${ev.event}:</strong> Actual ${ev.actual || '—'} vs Consensus ${ev.consensus || '—'} — <span class="hawk">HAWKISH surprise</span>. Higher than expected → market prices in tighter policy / higher rates.`);
+        } else if (ev.hawk_dove === -1) {
+            analysis.push(`📉 <strong>${ev.event}:</strong> Actual ${ev.actual || '—'} vs Consensus ${ev.consensus || '—'} — <span class="dove">DOVISH surprise</span>. Lower than expected → market prices in easier policy / lower rates.`);
+        } else if (ev.category === 'FOMC Decision' || ev.category === 'Powell Speech') {
+            analysis.push(`🏛️ <strong>${ev.event}:</strong> See the premium bar chart for market reaction — ${ev.category} events drive significant repricing across the curve.`);
+        }
+    });
+
+    if (analysis.length === 0) {
+        analysis.push('No significant economic events with data surprises on this day. Premium changes may be driven by position flows, overseas events, or inter-day digestion of prior data.');
+    }
+
+    document.getElementById('analysis-text').innerHTML = analysis.join('<br><br>');
+}
+
+document.getElementById('date-picker').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadDay();
+});
+</script>
+{% endblock %}

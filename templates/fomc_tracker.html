@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}FOMC Tracker — ZQ Fixed Income Lab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>FOMC Meeting Tracker</h1>
+    <p class="subtitle">All FOMC rate decisions 2021–2025 with meeting premium reactions & 5-day windows</p>
+</div>
+
+<!-- Summary Stats -->
+<div class="grid-4" id="fomc-stats">
+    <div class="card">
+        <div class="card-title">Total Meetings</div>
+        <div class="card-value" id="total-meetings">—</div>
+    </div>
+    <div class="card">
+        <div class="card-title">Rate Hikes</div>
+        <div class="card-value positive" id="total-hikes">—</div>
+    </div>
+    <div class="card">
+        <div class="card-title">Rate Cuts</div>
+        <div class="card-value negative" id="total-cuts">—</div>
+    </div>
+    <div class="card">
+        <div class="card-title">Holds</div>
+        <div class="card-value" id="total-holds">—</div>
+    </div>
+</div>
+
+<!-- FOMC Day Premium Changes Chart -->
+<div class="full-width card">
+    <div class="card-title">FED1 Premium Change on FOMC Decision Days</div>
+    <div class="chart-container tall">
+        <canvas id="fomcFed1Chart"></canvas>
+    </div>
+</div>
+
+<!-- All Meetings Table -->
+<div class="full-width card">
+    <div class="card-title">All FOMC Meetings — Rate Decisions & Premium Reactions</div>
+    <div class="scrollable-table" style="max-height:700px">
+        <table class="data-table" id="fomc-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Rate</th>
+                    <th>Exp</th>
+                    <th>Prev</th>
+                    <th>SEP</th>
+                    <th>FED1 d/d</th>
+                    <th>FED2 d/d</th>
+                    <th>FED3 d/d</th>
+                    <th>FED4 d/d</th>
+                    <th>FED5 d/d</th>
+                    <th>FED6 d/d</th>
+                    <th>FED7 d/d</th>
+                    <th>FED8 d/d</th>
+                </tr>
+            </thead>
+            <tbody id="fomc-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Meeting Detail Cards -->
+<div id="meeting-cards"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', async () => {
+    const meetings = await fetchJSON('/api/fomc-meetings');
+
+    // Stats
+    let hikes = 0, cuts = 0, holds = 0;
+    meetings.forEach(m => {
+        const act = parseFloat(m.actual);
+        const prev = parseFloat(m.previous);
+        if (!isNaN(act) && !isNaN(prev)) {
+            if (act > prev) hikes++;
+            else if (act < prev) cuts++;
+            else holds++;
+        } else {
+            holds++;
+        }
+    });
+
+    document.getElementById('total-meetings').textContent = meetings.length;
+    document.getElementById('total-hikes').textContent = hikes;
+    document.getElementById('total-cuts').textContent = cuts;
+    document.getElementById('total-holds').textContent = holds;
+
+    // FED1 on FOMC days chart
+    const fomcDates = meetings.map(m => m.date);
+    const fed1Changes = meetings.map(m => m.changes.FED1 || 0);
+
+    new Chart(document.getElementById('fomcFed1Chart'), {
+        type: 'bar',
+        data: {
+            labels: fomcDates,
+            datasets: [{
+                label: 'FED1 d/d Change on FOMC Day (bps)',
+                data: fed1Changes,
+                backgroundColor: fed1Changes.map(v =>
+                    v > 0 ? 'rgba(239,68,68,0.6)' : v < 0 ? 'rgba(16,185,129,0.6)' : 'rgba(100,116,139,0.3)'
+                ),
+                borderColor: fed1Changes.map(v =>
+                    v > 0 ? '#ef4444' : v < 0 ? '#10b981' : '#64748b'
+                ),
+                borderWidth: 1,
+                borderRadius: 4,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { maxTicksLimit: 20, maxRotation: 45 } },
+                y: { title: { display: true, text: 'bps', color: COLORS.text } }
+            }
+        })
+    });
+
+    // Table
+    const tbody = document.getElementById('fomc-body');
+    meetings.forEach(m => {
+        const act = parseFloat(m.actual);
+        const prev = parseFloat(m.previous);
+        let rateClass = '';
+        if (!isNaN(act) && !isNaN(prev)) {
+            rateClass = act > prev ? 'hawk' : act < prev ? 'dove' : '';
+        }
+
+        const surprise = m.actual !== m.consensus;
+        const sepBadge = m.has_sep ? '<span class="badge badge-sep">SEP</span>' : '';
+
+        let row = `<tr>`;
+        row += `<td class="date-col" onclick="window.location='/day-explorer?date=${m.date}'">${m.date}</td>`;
+        row += `<td class="${rateClass}" style="font-weight:700">${m.actual || '—'}${surprise ? ' ⚡' : ''}</td>`;
+        row += `<td>${m.consensus || '—'}</td>`;
+        row += `<td>${m.previous || '—'}</td>`;
+        row += `<td>${sepBadge}</td>`;
+
+        for (let i = 1; i <= 8; i++) {
+            const v = m.changes[`FED${i}`];
+            row += `<td style="${colorBps(v)}">${formatBps(v)}</td>`;
+        }
+        row += `</tr>`;
+        tbody.innerHTML += row;
+    });
+
+    // Meeting 5-day window cards (top 10 most volatile)
+    const sorted = [...meetings].sort((a, b) => {
+        const aVol = Object.values(a.changes).filter(v => v !== null).reduce((s, v) => s + Math.abs(v), 0);
+        const bVol = Object.values(b.changes).filter(v => v !== null).reduce((s, v) => s + Math.abs(v), 0);
+        return bVol - aVol;
+    });
+
+    const cardsDiv = document.getElementById('meeting-cards');
+    cardsDiv.innerHTML = '<h2 style="margin:2rem 0 1rem;font-size:1.3rem;">Top 10 Most Volatile FOMC Meeting Days</h2>';
+
+    sorted.slice(0, 10).forEach(m => {
+        const act = parseFloat(m.actual);
+        const prev = parseFloat(m.previous);
+        let action = 'HOLD';
+        let rateClass = 'hold';
+        if (!isNaN(act) && !isNaN(prev)) {
+            if (act > prev) { action = `HIKE +${((act - prev) * 100).toFixed(0)}bp`; rateClass = 'hike'; }
+            else if (act < prev) { action = `CUT -${((prev - act) * 100).toFixed(0)}bp`; rateClass = 'cut'; }
+        }
+
+        let html = `<div class="fomc-card">
+            <div class="fomc-card-header">
+                <div>
+                    <div class="fomc-date">${m.date}</div>
+                    <div style="font-size:0.8rem;color:var(--text-secondary)">
+                        ${m.has_sep ? '★ SEP Meeting' : ''} | Rate: ${m.actual || '—'} (exp: ${m.consensus || '—'})
+                    </div>
+                </div>
+                <div class="fomc-rate ${rateClass}">${action}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:0.5rem;text-align:center;">`;
+
+        for (let i = 1; i <= 8; i++) {
+            const v = m.changes[`FED${i}`];
+            html += `<div>
+                <div style="font-size:0.65rem;color:var(--text-muted)">FED${i}</div>
+                <div style="${colorBps(v)};font-weight:700;font-family:'JetBrains Mono',monospace">${formatBps(v)}</div>
+            </div>`;
+        }
+
+        html += `</div>`;
+
+        // 5-day window
+        if (m.window && m.window.length > 0) {
+            html += `<div style="margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem;">
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem;">5-Day Window (FED1-FED4 changes):</div>
+                <div style="display:grid;grid-template-columns:repeat(${m.window.length},1fr);gap:0.5rem;text-align:center;">`;
+
+            m.window.forEach(w => {
+                const label = w.offset === 0 ? `<strong>${w.date}</strong>` : w.date;
+                const isFomc = w.offset === 0 ? 'border:1px solid var(--accent-blue);border-radius:8px;padding:4px;' : '';
+                html += `<div style="${isFomc}">
+                    <div style="font-size:0.65rem;color:var(--text-muted)">${label} (${w.offset > 0 ? '+' : ''}${w.offset})</div>`;
+                for (let i = 1; i <= 4; i++) {
+                    const v = w.changes[`FED${i}`];
+                    html += `<div style="${colorBps(v)};font-size:0.75rem;font-family:'JetBrains Mono',monospace">${formatBps(v)}</div>`;
+                }
+                html += `</div>`;
+            });
+
+            html += `</div></div>`;
+        }
+
+        html += `</div>`;
+        cardsDiv.innerHTML += html;
+    });
+});
+</script>
+{% endblock %}

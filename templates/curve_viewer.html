@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Curve Viewer — ZQ Fixed Income Lab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Meeting Premium Curve Viewer</h1>
+    <p class="subtitle">Visualize FED1–FED12 curve evolution over time — animate through dates to see curve shifts</p>
+</div>
+
+<div style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap; margin-bottom:1.5rem;">
+    <input type="date" id="curve-date" class="date-input" value="2022-06-15">
+    <button class="btn" onclick="animateBackward()" id="btn-back">⏮ -30 days</button>
+    <button class="btn" onclick="prevDay()">← Prev</button>
+    <button class="btn btn-primary" onclick="toggleAnimate()" id="btn-animate">▶ Animate</button>
+    <button class="btn" onclick="nextDay()">Next →</button>
+    <button class="btn" onclick="animateForward()" id="btn-fwd">+30 days ⏭</button>
+    <span id="curve-status" style="color:var(--text-muted); font-size:0.85rem; font-family:'JetBrains Mono',monospace;"></span>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-title">Meeting Premium Curve (FED1–FED12)</div>
+        <div class="chart-container tall">
+            <canvas id="curveChart"></canvas>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">Day-over-Day Changes</div>
+        <div class="chart-container tall">
+            <canvas id="curveChangeChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="full-width card">
+    <div class="card-title">Curve History — FED1 vs FED4 vs FED8 (Last 60 Days from Selected)</div>
+    <div class="chart-container">
+        <canvas id="curveHistoryChart"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let dates = [];
+let currentDateIdx = 0;
+let animating = false;
+let animInterval = null;
+let curveChart, curveChangeChart, curveHistoryChart;
+
+document.addEventListener('DOMContentLoaded', async () => {
+    dates = await fetchJSON('/api/available-dates');
+    loadCurve();
+});
+
+function findDateIdx(dateStr) {
+    let idx = dates.indexOf(dateStr);
+    if (idx < 0) {
+        const t = new Date(dateStr).getTime();
+        let best = 0, bestDiff = Infinity;
+        dates.forEach((d, i) => {
+            const diff = Math.abs(new Date(d).getTime() - t);
+            if (diff < bestDiff) { bestDiff = diff; best = i; }
+        });
+        idx = best;
+    }
+    return idx;
+}
+
+async function loadCurve() {
+    const dateStr = document.getElementById('curve-date').value;
+    currentDateIdx = findDateIdx(dateStr);
+    const actual = dates[currentDateIdx];
+    document.getElementById('curve-date').value = actual;
+
+    const data = await fetchJSON(`/api/day-data/${actual}`);
+    if (data.error) {
+        document.getElementById('curve-status').textContent = 'No data';
+        return;
+    }
+
+    document.getElementById('curve-status').textContent = actual;
+
+    // Curve chart
+    const labels = Object.keys(data.premiums);
+    const vals = Object.values(data.premiums);
+    const prevVals = Object.values(data.prev_premiums);
+    const changes = Object.values(data.changes);
+
+    if (curveChart) curveChart.destroy();
+    curveChart = new Chart(document.getElementById('curveChart'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: actual,
+                    data: vals,
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99,102,241,0.15)',
+                    fill: true,
+                    borderWidth: 2.5,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#6366f1',
+                    tension: 0.3,
+                },
+                {
+                    label: 'Previous Day',
+                    data: prevVals,
+                    borderColor: '#475569',
+                    borderWidth: 1.5,
+                    borderDash: [4, 4],
+                    pointRadius: 3,
+                    pointBackgroundColor: '#475569',
+                    fill: false,
+                    tension: 0.3,
+                }
+            ]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            animation: { duration: 300 },
+            scales: { y: { title: { display: true, text: 'Premium (bps)', color: COLORS.text } } },
+        })
+    });
+
+    // Change chart
+    if (curveChangeChart) curveChangeChart.destroy();
+    curveChangeChart = new Chart(document.getElementById('curveChangeChart'), {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: 'd/d Change',
+                data: changes,
+                backgroundColor: changes.map(v => v > 0 ? 'rgba(239,68,68,0.6)' : v < 0 ? 'rgba(16,185,129,0.6)' : 'rgba(100,116,139,0.3)'),
+                borderColor: changes.map(v => v > 0 ? '#ef4444' : v < 0 ? '#10b981' : '#64748b'),
+                borderWidth: 1,
+                borderRadius: 4,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            plugins: { legend: { display: false } },
+            animation: { duration: 300 },
+            scales: { y: { title: { display: true, text: 'bps change', color: COLORS.text } } },
+        })
+    });
+
+    // Load 60-day history
+    loadHistory(currentDateIdx);
+}
+
+async function loadHistory(endIdx) {
+    const startIdx = Math.max(0, endIdx - 60);
+    const histDates = dates.slice(startIdx, endIdx + 1);
+
+    // Fetch a few snapshots
+    const snapshots = [];
+    for (let i = 0; i < histDates.length; i += 3) {
+        try {
+            const d = await fetchJSON(`/api/curve-snapshot/${histDates[i]}`);
+            snapshots.push(d);
+        } catch(e) {}
+    }
+
+    if (curveHistoryChart) curveHistoryChart.destroy();
+    curveHistoryChart = new Chart(document.getElementById('curveHistoryChart'), {
+        type: 'line',
+        data: {
+            labels: histDates,
+            datasets: [
+                {
+                    label: 'FED1',
+                    data: await getSeriesData(histDates, 'FED1'),
+                    borderColor: COLORS.fed1,
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                },
+                {
+                    label: 'FED4',
+                    data: await getSeriesData(histDates, 'FED4'),
+                    borderColor: COLORS.fed4,
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                },
+                {
+                    label: 'FED8',
+                    data: await getSeriesData(histDates, 'FED8'),
+                    borderColor: COLORS.fed8,
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                },
+            ]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            scales: { x: { ticks: { maxTicksLimit: 10 } } },
+            interaction: { mode: 'index', intersect: false },
+        })
+    });
+}
+
+async function getSeriesData(dates, fed) {
+    // Use the premiums timeseries API
+    const ts = await fetchJSON('/api/premium-timeseries');
+    const result = [];
+    dates.forEach(d => {
+        const idx = ts.dates.indexOf(d);
+        result.push(idx >= 0 ? ts[fed][idx] : null);
+    });
+    return result;
+}
+
+function prevDay() { if (currentDateIdx > 0) { currentDateIdx--; document.getElementById('curve-date').value = dates[currentDateIdx]; loadCurve(); } }
+function nextDay() { if (currentDateIdx < dates.length - 1) { currentDateIdx++; document.getElementById('curve-date').value = dates[currentDateIdx]; loadCurve(); } }
+
+function animateForward() { currentDateIdx = Math.min(dates.length - 1, currentDateIdx + 30); document.getElementById('curve-date').value = dates[currentDateIdx]; loadCurve(); }
+function animateBackward() { currentDateIdx = Math.max(0, currentDateIdx - 30); document.getElementById('curve-date').value = dates[currentDateIdx]; loadCurve(); }
+
+function toggleAnimate() {
+    if (animating) {
+        clearInterval(animInterval);
+        animating = false;
+        document.getElementById('btn-animate').textContent = '▶ Animate';
+    } else {
+        animating = true;
+        document.getElementById('btn-animate').textContent = '⏸ Pause';
+        animInterval = setInterval(() => {
+            if (currentDateIdx < dates.length - 1) {
+                currentDateIdx++;
+                document.getElementById('curve-date').value = dates[currentDateIdx];
+                loadCurve();
+            } else {
+                toggleAnimate();
+            }
+        }, 800);
+    }
+}
+</script>
+{% endblock %}

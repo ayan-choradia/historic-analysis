@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}Event Analysis — ZQ Fixed Income Lab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Event Impact Analysis</h1>
+    <p class="subtitle">How each data release type moves meeting premiums — average absolute & directional bps across FED1–FED12</p>
+</div>
+
+<!-- Event Impact Heatmap -->
+<div class="full-width card">
+    <div class="card-title">Average Absolute Premium Move by Event Type & Tenor (bps)</div>
+    <div class="scrollable-table">
+        <table class="data-table" id="impact-heatmap">
+            <thead>
+                <tr>
+                    <th>Event Type</th>
+                    <th>Count</th>
+                    <th>FED1</th>
+                    <th>FED2</th>
+                    <th>FED3</th>
+                    <th>FED4</th>
+                    <th>FED5</th>
+                    <th>FED6</th>
+                    <th>FED7</th>
+                    <th>FED8</th>
+                    <th>FED9</th>
+                    <th>FED10</th>
+                    <th>FED11</th>
+                    <th>FED12</th>
+                </tr>
+            </thead>
+            <tbody id="heatmap-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Chart: Biggest movers by event type -->
+<div class="grid-2">
+    <div class="card">
+        <div class="card-title">Avg |FED1 Move| by Event Type (bps)</div>
+        <div class="chart-container tall">
+            <canvas id="fed1ImpactChart"></canvas>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">Avg |FED4 Move| by Event Type (bps)</div>
+        <div class="chart-container tall">
+            <canvas id="fed4ImpactChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Hawkish vs Dovish Surprise Analysis -->
+<div class="full-width card">
+    <div class="card-title">Hawkish vs Dovish Surprise — Directional Impact on FED1</div>
+    <div class="chart-container tall">
+        <canvas id="hawkDoveChart"></canvas>
+    </div>
+</div>
+
+<!-- Front vs Back sensitivity -->
+<div class="full-width card">
+    <div class="card-title">Front-End (FED1-3) vs Back-End (FED5-8) Sensitivity by Event</div>
+    <div class="chart-container tall">
+        <canvas id="frontBackChart"></canvas>
+    </div>
+</div>
+
+<!-- Hawk/Dove breakdown -->
+<div class="full-width card">
+    <div class="card-title">Surprise Distribution by Event Type</div>
+    <div class="scrollable-table">
+        <table class="data-table" id="surprise-table">
+            <thead>
+                <tr>
+                    <th>Event Type</th>
+                    <th>Total</th>
+                    <th>Hawkish Surprises</th>
+                    <th>Dovish Surprises</th>
+                    <th>Inline</th>
+                    <th>% Hawkish</th>
+                    <th>Hawk FED1 Move</th>
+                    <th>Dove FED1 Move</th>
+                </tr>
+            </thead>
+            <tbody id="surprise-body"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', async () => {
+    const impacts = await fetchJSON('/api/event-impacts');
+
+    const categories = Object.keys(impacts).sort((a, b) => {
+        const aFed1 = impacts[a].avg_abs_move.FED1 || 0;
+        const bFed1 = impacts[b].avg_abs_move.FED1 || 0;
+        return bFed1 - aFed1;
+    });
+
+    // ─── Heatmap Table ───
+    const tbody = document.getElementById('heatmap-body');
+    categories.forEach(cat => {
+        const d = impacts[cat];
+        let row = `<tr><td style="font-weight:600;font-family:Inter">${cat}</td>`;
+        row += `<td><span class="count-badge">${d.count}</span></td>`;
+        for (let i = 1; i <= 12; i++) {
+            const val = d.avg_abs_move[`FED${i}`] || 0;
+            const intensity = Math.min(5, Math.floor(val / 0.5));
+            const cls = `heat${intensity}`;
+            row += `<td class="${cls}" style="text-align:center">${val.toFixed(2)}</td>`;
+        }
+        row += '</tr>';
+        tbody.innerHTML += row;
+    });
+
+    // ─── FED1 Impact Bar Chart ───
+    const sortedByCat = categories.filter(c => impacts[c].avg_abs_move.FED1 > 0);
+    new Chart(document.getElementById('fed1ImpactChart'), {
+        type: 'bar',
+        data: {
+            labels: sortedByCat,
+            datasets: [{
+                label: 'Avg |FED1 Move| (bps)',
+                data: sortedByCat.map(c => impacts[c].avg_abs_move.FED1 || 0),
+                backgroundColor: 'rgba(99,102,241,0.5)',
+                borderColor: '#6366f1',
+                borderWidth: 1,
+                borderRadius: 4,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+        })
+    });
+
+    // ─── FED4 Impact Bar Chart ───
+    const sortedByFed4 = [...categories].filter(c => impacts[c].avg_abs_move.FED4 > 0)
+        .sort((a, b) => (impacts[b].avg_abs_move.FED4 || 0) - (impacts[a].avg_abs_move.FED4 || 0));
+    new Chart(document.getElementById('fed4ImpactChart'), {
+        type: 'bar',
+        data: {
+            labels: sortedByFed4,
+            datasets: [{
+                label: 'Avg |FED4 Move| (bps)',
+                data: sortedByFed4.map(c => impacts[c].avg_abs_move.FED4 || 0),
+                backgroundColor: 'rgba(234,179,8,0.5)',
+                borderColor: '#eab308',
+                borderWidth: 1,
+                borderRadius: 4,
+            }]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+        })
+    });
+
+    // ─── Hawk/Dove Directional Chart ───
+    const cats2 = categories.filter(c => impacts[c].hawk_count > 0 || impacts[c].dove_count > 0);
+    new Chart(document.getElementById('hawkDoveChart'), {
+        type: 'bar',
+        data: {
+            labels: cats2,
+            datasets: [
+                {
+                    label: 'Hawkish Surprise → FED1 Move',
+                    data: cats2.map(c => impacts[c].hawk_avg_move.FED1 || 0),
+                    backgroundColor: 'rgba(239,68,68,0.5)',
+                    borderColor: '#ef4444',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Dovish Surprise → FED1 Move',
+                    data: cats2.map(c => impacts[c].dove_avg_move.FED1 || 0),
+                    backgroundColor: 'rgba(16,185,129,0.5)',
+                    borderColor: '#10b981',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }
+            ]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            indexAxis: 'y',
+            scales: {
+                x: { title: { display: true, text: 'Avg FED1 Move (bps)', color: COLORS.text } }
+            }
+        })
+    });
+
+    // ─── Front vs Back Sensitivity ───
+    const cats3 = categories.filter(c => impacts[c].count > 5);
+    new Chart(document.getElementById('frontBackChart'), {
+        type: 'bar',
+        data: {
+            labels: cats3,
+            datasets: [
+                {
+                    label: 'Front (avg FED1-3)',
+                    data: cats3.map(c => {
+                        const m = impacts[c].avg_abs_move;
+                        return ((m.FED1 || 0) + (m.FED2 || 0) + (m.FED3 || 0)) / 3;
+                    }),
+                    backgroundColor: 'rgba(239,68,68,0.4)',
+                    borderColor: '#ef4444',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Back (avg FED5-8)',
+                    data: cats3.map(c => {
+                        const m = impacts[c].avg_abs_move;
+                        return ((m.FED5 || 0) + (m.FED6 || 0) + (m.FED7 || 0) + (m.FED8 || 0)) / 4;
+                    }),
+                    backgroundColor: 'rgba(6,182,212,0.4)',
+                    borderColor: '#06b6d4',
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }
+            ]
+        },
+        options: deepMerge(CHART_DEFAULTS, {
+            scales: { y: { title: { display: true, text: 'Avg |bps| Move', color: COLORS.text } } }
+        })
+    });
+
+    // ─── Surprise Distribution Table ───
+    const sBody = document.getElementById('surprise-body');
+    categories.forEach(cat => {
+        const d = impacts[cat];
+        const pctHawk = d.count > 0 ? ((d.hawk_count / d.count) * 100).toFixed(0) : '—';
+        sBody.innerHTML += `
+            <tr>
+                <td style="font-weight:600;font-family:Inter">${cat}</td>
+                <td><span class="count-badge">${d.count}</span></td>
+                <td class="hawk">${d.hawk_count}</td>
+                <td class="dove">${d.dove_count}</td>
+                <td>${d.inline_count}</td>
+                <td>${pctHawk}%</td>
+                <td class="hawk">${formatBps(d.hawk_avg_move.FED1)}</td>
+                <td class="dove">${formatBps(d.dove_avg_move.FED1)}</td>
+            </tr>
+        `;
+    });
+});
+</script>
+{% endblock %}
